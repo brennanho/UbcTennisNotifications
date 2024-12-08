@@ -1,8 +1,8 @@
 {
   "name": "ubcbookings",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Ubc Tennis Court booking notifications",
+  "main": "index.mjs",
   "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -11,6 +11,7 @@
   "license": "ISC",
   "dependencies": {
     "aws-sdk": "^2.1692.0",
-    "puppeteer": "^23.9.0"
+    "@sparticuz/chromium": "^131.x.x",
+    "puppeteer-core": "^23.x.x"
   }
 }
