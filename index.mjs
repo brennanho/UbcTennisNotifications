@@ -1,12 +1,14 @@
 import puppeteer from "puppeteer-core";
 import AWS from "aws-sdk";
 import chromium from "@sparticuz/chromium";
+import NodeCache from "node-cache";
 
 AWS.config.update({
   region: "us-east-1",
 });
 
-const ses = new AWS.SES();
+const SES = new AWS.SES();
+const CACHE = new NodeCache({ stdTTL: 3600, checkperiod: 3600 });
 
 const courts = [
   {
@@ -132,7 +134,8 @@ export const handler = async (event = {}) => {
     const time = new Date().toString();
     console.log("Finished fetching all bookings");
 
-    if (!areAllCourtsEmpty(allBookings)) {
+    const stringifiedBookings = JSON.stringify(allBookings);
+    if (!areAllCourtsEmpty(allBookings) && !CACHE.get(stringifiedBookings)) {
       console.log("New bookings found, sending email");
 
       const params = {
@@ -146,9 +149,10 @@ export const handler = async (event = {}) => {
         },
       };
 
-      const resp = await ses.sendEmail(params).promise();
+      const resp = await SES.sendEmail(params).promise();
       console.log("Email sent:", resp);
 
+      CACHE.set(stringifiedBookings, true);
       return {
         statusCode: 200,
         body: JSON.stringify({
@@ -220,9 +224,9 @@ function areAllCourtsEmpty(courts) {
 
 async function fetchVerifiedEmailAddresses() {
   const params = { IdentityType: "EmailAddress" };
-  const data = await ses.listIdentities(params).promise();
+  const data = await SES.listIdentities(params).promise();
   const verifiedEmails = data.Identities.filter(async (email) => {
-    const attrs = await ses.getIdentityVerificationAttributes({ Identities: [email] }).promise();
+    const attrs = await SES.getIdentityVerificationAttributes({ Identities: [email] }).promise();
     return attrs.VerificationAttributes[email]?.VerificationStatus === "Success";
   });
   return verifiedEmails;
