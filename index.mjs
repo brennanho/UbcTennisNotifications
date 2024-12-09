@@ -1,14 +1,15 @@
 import puppeteer from "puppeteer-core";
 import AWS from "aws-sdk";
 import chromium from "@sparticuz/chromium";
-import NodeCache from "node-cache";
 
 AWS.config.update({
   region: "us-east-1",
 });
 
 const SES = new AWS.SES();
-const CACHE = new NodeCache({ stdTTL: 3600, checkperiod: 3600 });
+const DDB = new AWS.DynamoDB.DocumentClient({
+  region: "us-east-1",
+});
 
 const courts = [
   {
@@ -131,13 +132,23 @@ export const handler = async (event = {}) => {
       allBookings[court.number] = availableBookings;
     }
 
-    const time = new Date().toString();
     console.log("Finished fetching all bookings");
 
-    const stringifiedBookings = JSON.stringify(allBookings);
-    if (!areAllCourtsEmpty(allBookings) && !CACHE.get(stringifiedBookings)) {
+    const cachedBookings = await getBookings();
+    const newBookings = getNewBookings(allBookings, cachedBookings);
+
+    if (!areAllCourtsEmpty(newBookings)) {
       console.log("New bookings found, sending email");
 
+      const time = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/Los_Angeles",
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+      }).format(new Date());
       const params = {
         Source: process.env.SES_SOURCE_EMAIL,
         Destination: {
@@ -145,19 +156,20 @@ export const handler = async (event = {}) => {
         },
         Message: {
           Subject: { Data: `Available UBC Tennis Courts: ${time}`, Charset: "UTF-8" },
-          Body: { Html: { Data: formatMessage(allBookings), Charset: "UTF-8" } },
+          Body: { Html: { Data: formatMessage(newBookings), Charset: "UTF-8" } },
         },
       };
 
       const resp = await SES.sendEmail(params).promise();
       console.log("Email sent:", resp);
+      await putBookings(allBookings);
+      console.log("Put new bookings: ", newBookings);
 
-      CACHE.set(stringifiedBookings, true);
       return {
         statusCode: 200,
         body: JSON.stringify({
           message: "Successfully sent email for court bookings.",
-          bookings: allBookings,
+          bookings: newBookings,
         }),
       };
     } else {
@@ -216,6 +228,66 @@ function formatMessage(bookingData) {
 
   message += `</tbody></table>`;
   return message;
+}
+
+function getNewBookings(allBookings, oldBookings) {
+  const newBookings = {};
+
+  for (const court in allBookings) {
+    const currentBookings = allBookings[court];
+    const previousBookings = oldBookings[court] || [];
+
+    // Find bookings in currentBookings that are not in previousBookings
+    const diff = currentBookings.filter(
+      (current) =>
+        !previousBookings.some(
+          (cached) =>
+            current.time === cached.time && current.date === cached.date && current.courtUrl === cached.courtUrl
+        )
+    );
+
+    newBookings[court] = diff.length > 0 ? diff : [];
+  }
+
+  return newBookings;
+}
+
+async function putBookings(bookings) {
+  const params = {
+    TableName: "UBCTennisNotificationsCache",
+    Item: {
+      id: "KEY",
+      bookings: JSON.stringify(bookings),
+    },
+  };
+
+  try {
+    await DDB.put(params).promise();
+    console.log("Bookings successfully added: ", bookings);
+  } catch (error) {
+    console.error("Error adding item:", error);
+  }
+}
+
+async function getBookings() {
+  const params = {
+    TableName: "UBCTennisNotificationsCache",
+    Key: {
+      id: "KEY",
+    },
+  };
+
+  try {
+    const result = await DDB.get(params).promise();
+    if (result.Item) {
+      console.log("Bookings retrieved: ", result.Item.bookings);
+      return JSON.parse(result.Item.bookings);
+    } else {
+      console.log("Item not found.");
+    }
+  } catch (error) {
+    console.error("Error getting item:", error);
+  }
 }
 
 function areAllCourtsEmpty(courts) {
